@@ -1,0 +1,15 @@
+{
+  "run_id": "run_009_none",
+  "target_flow_ml_per_hr": 150.0,
+  "drop_factor_name": "microdrip_60",
+  "drop_factor_nominal_gtts_per_ml": 60,
+  "fluid_name": "normal_saline",
+  "bag_volume_ml": 500.0,
+  "duration_s": 12600.000000000002,
+  "sample_period_s": 1.0,
+  "anomaly": "none",
+  "anomaly_start_frac": null,
+  "n_weight_samples": 12601,
+  "n_drops_observed": 31844,
+  "seed": 631664
+}

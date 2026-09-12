@@ -1,0 +1,15 @@
+{
+  "run_id": "run_017_leak",
+  "target_flow_ml_per_hr": 50.0,
+  "drop_factor_name": "macrodrip_15",
+  "drop_factor_nominal_gtts_per_ml": 15,
+  "fluid_name": "ringers_lactate",
+  "bag_volume_ml": 500.0,
+  "duration_s": 21600.0,
+  "sample_period_s": 1.0,
+  "anomaly": "leak",
+  "anomaly_start_frac": 0.5,
+  "n_weight_samples": 21601,
+  "n_drops_observed": 9161,
+  "seed": 189471
+}

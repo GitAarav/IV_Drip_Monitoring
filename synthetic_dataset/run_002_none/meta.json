@@ -1,0 +1,15 @@
+{
+  "run_id": "run_002_none",
+  "target_flow_ml_per_hr": 75.0,
+  "drop_factor_name": "macrodrip_10",
+  "drop_factor_nominal_gtts_per_ml": 10,
+  "fluid_name": "d5w_dextrose",
+  "bag_volume_ml": 500.0,
+  "duration_s": 25200.000000000004,
+  "sample_period_s": 1.0,
+  "anomaly": "none",
+  "anomaly_start_frac": null,
+  "n_weight_samples": 25201,
+  "n_drops_observed": 5579,
+  "seed": 975622
+}

@@ -1,0 +1,15 @@
+{
+  "run_id": "run_003_none",
+  "target_flow_ml_per_hr": 125.0,
+  "drop_factor_name": "microdrip_60",
+  "drop_factor_nominal_gtts_per_ml": 60,
+  "fluid_name": "ringers_lactate",
+  "bag_volume_ml": 500.0,
+  "duration_s": 15120.0,
+  "sample_period_s": 1.0,
+  "anomaly": "none",
+  "anomaly_start_frac": null,
+  "n_weight_samples": 15121,
+  "n_drops_observed": 32537,
+  "seed": 786064
+}

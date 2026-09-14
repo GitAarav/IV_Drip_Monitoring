@@ -211,3 +211,56 @@ def root():
         "message": "IV Drip Monitoring API",
         "docs": "/docs"
     }
+
+# ---------------------------------------------------------
+# EKF PROCESSING
+# ---------------------------------------------------------
+
+@app.get("/api/sessions/{session_id}/fusion")
+def get_fusion(session_id: str):
+
+    session_dir = DATASET_DIR / session_id
+
+    if not session_dir.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found"
+        )
+
+    meta_file = session_dir / "meta.json"
+
+    if not meta_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Session metadata not found"
+        )
+
+    with open(meta_file, "r") as f:
+        metadata = json.load(f)
+
+    weight_file = find_csv(
+        session_dir,
+        ["weight_sensor.csv", "weight.csv"]
+    )
+
+    drop_file = find_csv(
+        session_dir,
+        ["drop_sensor.csv", "drops.csv"]
+    )
+
+    if not weight_file or not drop_file:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Sensor CSV files not found"
+        )
+
+    weight_data = read_csv_file(weight_file)
+    drop_data = read_csv_file(drop_file)
+
+    return {
+        "session_id": session_id,
+        "metadata": metadata,
+        "weight_samples": len(weight_data),
+        "drop_samples": len(drop_data),
+    }

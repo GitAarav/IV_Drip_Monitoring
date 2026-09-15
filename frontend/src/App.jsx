@@ -1,296 +1,258 @@
-jsx
 import { useEffect, useMemo, useState } from "react";
-import {
-  Activity,
-  AlertTriangle,
-  CheckCircle2,
-  Clock3,
-  Droplets,
-  FlaskConical,
-  Gauge,
-  Scale,
-  Wifi,
-} from "lucide-react";
-
-import {
-  getFusion,
-  getSession,
-  getSessions,
-} from "./api";
-
-import MetricCard from "./components/MetricCard";
-import SensorCard from "./components/SensorCard";
-import PredictionCard from "./components/PredictionCard";
-import FlowChart from "./components/FlowChart";
-import WeightChart from "./components/WeightChart";
-import SessionSelector from "./components/SessionSelector";
-
 import "./App.css";
+
+const API_URL = "http://127.0.0.1:8000/api";
 
 function App() {
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState("");
-
   const [sessionData, setSessionData] = useState(null);
-  const [fusionData, setFusionData] = useState(null);
-
-  const [loadingSessions, setLoadingSessions] = useState(true);
+  const [fusionData, setFusionData] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [loadingSession, setLoadingSession] = useState(false);
   const [error, setError] = useState("");
 
-  // ------------------------------------------------------------
-  // Load available sessions when the application starts
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // Load available sessions
+  // --------------------------------------------------
   useEffect(() => {
     async function loadSessions() {
       try {
-        setLoadingSessions(true);
+        setLoading(true);
         setError("");
 
-        const data = await getSessions();
+        const response = await fetch(`${API_URL}/sessions`);
 
-        setSessions(data);
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}`);
+        }
 
-        // Automatically select the first available session
-        if (data.length > 0) {
-          setSelectedSession(data[0].id);
+        const data = await response.json();
+
+        console.log("Sessions from backend:", data);
+
+        const sessionList = Array.isArray(data)
+          ? data
+          : data.sessions || [];
+
+        setSessions(sessionList);
+
+        if (sessionList.length > 0) {
+          const first =
+            typeof sessionList[0] === "string"
+              ? sessionList[0]
+              : sessionList[0].id;
+
+          setSelectedSession(first);
         }
       } catch (err) {
-        console.error(err);
+        console.error("Session loading error:", err);
+
         setError(
-          "Could not connect to the FastAPI backend. Make sure the backend is running on port 8000."
+          "Cannot connect to FastAPI. Start the backend with: uvicorn main:app --reload"
         );
       } finally {
-        setLoadingSessions(false);
+        setLoading(false);
       }
     }
 
     loadSessions();
   }, []);
 
-  // ------------------------------------------------------------
+  // --------------------------------------------------
   // Load selected session
-  // ------------------------------------------------------------
+  // --------------------------------------------------
   useEffect(() => {
     if (!selectedSession) return;
 
-    async function loadSelectedSession() {
+    async function loadSession() {
       try {
         setLoadingSession(true);
         setError("");
 
-        const [session, fusion] = await Promise.all([
-          getSession(selectedSession),
-          getFusion(selectedSession),
-        ]);
+        const [sessionResponse, fusionResponse] =
+          await Promise.all([
+            fetch(
+              `${API_URL}/sessions/${selectedSession}`
+            ),
+            fetch(
+              `${API_URL}/sessions/${selectedSession}/fusion`
+            ),
+          ]);
+
+        if (!sessionResponse.ok) {
+          throw new Error(
+            `Session API returned ${sessionResponse.status}`
+          );
+        }
+
+        if (!fusionResponse.ok) {
+          throw new Error(
+            `Fusion API returned ${fusionResponse.status}`
+          );
+        }
+
+        const session = await sessionResponse.json();
+        const fusion = await fusionResponse.json();
+
+        console.log("Selected session:", session);
+        console.log("Fusion:", fusion);
 
         setSessionData(session);
-        setFusionData(fusion);
+
+        const rows = Array.isArray(fusion)
+          ? fusion
+          : fusion.rows || fusion.data || [];
+
+        setFusionData(rows);
       } catch (err) {
-        console.error(err);
+        console.error("Session loading error:", err);
         setError(
-          "Could not load the selected session. Check the FastAPI backend and dataset."
+          `Could not load session "${selectedSession}". Check the backend console.`
         );
       } finally {
         setLoadingSession(false);
       }
     }
 
-    loadSelectedSession();
+    loadSession();
   }, [selectedSession]);
 
-  // ------------------------------------------------------------
-  // Extract metadata
-  // ------------------------------------------------------------
-  const metadata = sessionData?.metadata || sessionData?.meta || {};
+  // --------------------------------------------------
+  // Latest EKF result
+  // --------------------------------------------------
+  const latest = useMemo(() => {
+    if (!fusionData.length) return null;
+
+    return fusionData[fusionData.length - 1];
+  }, [fusionData]);
+
+  // --------------------------------------------------
+  // Values from EKF
+  // --------------------------------------------------
+  const fusedFlow = Number(
+    latest?.fused_flow_ml_per_hr ?? 0
+  );
+
+  const flowStd = Number(
+    latest?.fused_flow_std ?? 0
+  );
+
+  const dropFactor = Number(
+    latest?.fused_drop_factor ?? 0
+  );
+
+  const loadCellFlow = Number(
+    latest?.weight_only_flow ?? 0
+  );
+
+  const irFlow = Number(
+    latest?.drop_only_flow ?? 0
+  );
+
+  const remainingVolume = Number(
+    latest?.remaining_vol_ml ?? 0
+  );
+
+  const remainingTime = Number(
+    latest?.remaining_time_min ?? 0
+  );
+
+  const remainingLow = Number(
+    latest?.remaining_time_low_min ?? 0
+  );
+
+  const remainingHigh = Number(
+    latest?.remaining_time_high_min ?? 0
+  );
+
+  // --------------------------------------------------
+  // Metadata
+  // --------------------------------------------------
+  const metadata =
+    sessionData?.metadata ||
+    sessionData?.meta ||
+    {};
+
+  const targetFlow = Number(
+    metadata?.target_flow_ml_per_hr ??
+      sessionData?.target_flow_ml_per_hr ??
+      0
+  );
+
+  const bagVolume = Number(
+    metadata?.bag_volume_ml ??
+      sessionData?.bag_volume_ml ??
+      0
+  );
+
+  const nominalDropFactor = Number(
+    metadata?.drop_factor_nominal_gtts_per_ml ??
+      0
+  );
 
   const anomaly =
     metadata?.anomaly ||
     sessionData?.anomaly ||
     "none";
 
-  const targetFlow =
-    Number(
-      metadata?.target_flow_ml_per_hr ??
-        metadata?.target_flow ??
-        sessionData?.target_flow_ml_per_hr ??
-        0
-    ) || 0;
-
-  const bagVolume =
-    Number(
-      metadata?.bag_volume_ml ??
-        metadata?.bag_volume ??
-        sessionData?.bag_volume_ml ??
-        0
-    ) || 0;
-
-  const dropFactor =
-    Number(
-      metadata?.drop_factor_nominal_gtts_per_ml ??
-        metadata?.drop_factor ??
-        sessionData?.drop_factor ??
-        0
-    ) || 0;
-
-  // ------------------------------------------------------------
-  // Fusion rows
-  // ------------------------------------------------------------
-  const fusionRows = useMemo(() => {
-    if (!fusionData) return [];
-
-    if (Array.isArray(fusionData)) {
-      return fusionData;
-    }
-
-    if (Array.isArray(fusionData.rows)) {
-      return fusionData.rows;
-    }
-
-    if (Array.isArray(fusionData.data)) {
-      return fusionData.data;
-    }
-
-    return [];
-  }, [fusionData]);
-
-  // ------------------------------------------------------------
-  // Get latest EKF result
-  // ------------------------------------------------------------
-  const latestFusion = useMemo(() => {
-    if (!fusionRows.length) return null;
-
-    return fusionRows[fusionRows.length - 1];
-  }, [fusionRows]);
-
-  // ------------------------------------------------------------
-  // Extract current values
-  // ------------------------------------------------------------
-  const currentFlow =
-    Number(
-      latestFusion?.fused_flow_ml_per_hr ??
-        latestFusion?.fused_flow ??
-        latestFusion?.flow_rate ??
-        0
-    ) || 0;
-
-  const flowStd =
-    Number(
-      latestFusion?.fused_flow_std ??
-        latestFusion?.flow_std ??
-        latestFusion?.uncertainty ??
-        0
-    ) || 0;
-
-  const adaptiveDropFactor =
-    Number(
-      latestFusion?.fused_drop_factor ??
-        latestFusion?.drop_factor ??
-        dropFactor
-    ) || 0;
-
-  const remainingVolume =
-    Number(
-      latestFusion?.remaining_vol_ml ??
-        latestFusion?.remaining_volume_ml ??
-        latestFusion?.remaining_volume ??
-        0
-    ) || 0;
-
-  const remainingTime =
-    Number(
-      latestFusion?.remaining_time_min ??
-        latestFusion?.remaining_time_minutes ??
-        0
-    ) || 0;
-
-  const remainingLow =
-    Number(
-      latestFusion?.remaining_time_low_min ??
-        latestFusion?.remaining_low_min ??
-        0
-    ) || 0;
-
-  const remainingHigh =
-    Number(
-      latestFusion?.remaining_time_high_min ??
-        latestFusion?.remaining_high_min ??
-        0
-    ) || 0;
-
-  const loadCellFlow =
-    Number(
-      latestFusion?.weight_only_flow ??
-        latestFusion?.load_cell_flow ??
-        0
-    ) || 0;
-
-  const irFlow =
-    Number(
-      latestFusion?.drop_only_flow ??
-        latestFusion?.ir_flow ??
-        0
-    ) || 0;
-
-  // ------------------------------------------------------------
-  // Sensor agreement
-  // ------------------------------------------------------------
-  const sensorDifference = Math.abs(loadCellFlow - irFlow);
-
-  const sensorAgreement =
-    currentFlow > 0
-      ? Math.max(
-          0,
-          100 - (sensorDifference / Math.max(currentFlow, 1)) * 100
-        )
-      : 0;
-
-  const agreementLabel =
-    sensorAgreement >= 90
-      ? "Excellent"
-      : sensorAgreement >= 75
-      ? "Good"
-      : sensorAgreement >= 50
-      ? "Warning"
-      : "Poor";
-
-  // ------------------------------------------------------------
-  // Confidence
-  //
-  // This is a prototype confidence score derived from EKF
-  // uncertainty and sensor agreement.
-  // It is NOT a clinical confidence metric.
-  // ------------------------------------------------------------
-  const confidence = useMemo(() => {
-    if (!currentFlow) return 0;
-
-    const uncertaintyPenalty =
-      (flowStd / Math.max(currentFlow, 1)) * 100;
-
-    const score =
-      0.65 * sensorAgreement +
-      0.35 * Math.max(0, 100 - uncertaintyPenalty * 2);
-
-    return Math.max(0, Math.min(100, score));
-  }, [currentFlow, flowStd, sensorAgreement]);
-
-  // ------------------------------------------------------------
-  // Status
-  // ------------------------------------------------------------
   const isAnomaly =
     anomaly &&
     anomaly.toLowerCase() !== "none" &&
     anomaly.toLowerCase() !== "normal";
 
-  const deviceStatus = loadingSession
-    ? "Loading"
-    : "Online";
+  // --------------------------------------------------
+  // Sensor agreement
+  // --------------------------------------------------
+  const difference = Math.abs(
+    loadCellFlow - irFlow
+  );
 
-  // ------------------------------------------------------------
-  // Format remaining time
-  // ------------------------------------------------------------
+  const agreement =
+    fusedFlow > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            100 -
+              (difference /
+                Math.max(fusedFlow, 1)) *
+                100
+          )
+        )
+      : 0;
+
+  // --------------------------------------------------
+  // Prototype confidence
+  // --------------------------------------------------
+  const confidence =
+    fusedFlow > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            agreement * 0.7 +
+              Math.max(
+                0,
+                100 -
+                  (flowStd /
+                    Math.max(fusedFlow, 1)) *
+                    100
+              ) *
+                0.3
+          )
+        )
+      : 0;
+
+  // --------------------------------------------------
+  // Format time
+  // --------------------------------------------------
   function formatTime(minutes) {
-    if (!Number.isFinite(minutes) || minutes <= 0) {
+    if (!Number.isFinite(minutes)) {
+      return "--";
+    }
+
+    if (minutes <= 0) {
       return "--";
     }
 
@@ -304,127 +266,126 @@ function App() {
     return `${mins} min`;
   }
 
-  // ------------------------------------------------------------
-  // Convert raw fusion data to chart data
-  // ------------------------------------------------------------
-  const flowChartData = useMemo(() => {
-    return fusionRows.map((row, index) => ({
-      time:
-        Number(row.t_mid_s ?? row.time_s ?? row.time ?? index) || index,
-
-      fused:
-        Number(
-          row.fused_flow_ml_per_hr ??
-            row.fused_flow ??
-            row.flow_rate ??
-            0
-        ) || 0,
-
-      loadCell:
-        Number(
-          row.weight_only_flow ??
-            row.load_cell_flow ??
-            0
-        ) || 0,
-
-      ir:
-        Number(
-          row.drop_only_flow ??
-            row.ir_flow ??
-            0
-        ) || 0,
-
-      trueFlow:
-        Number(
-          row.true_flow ??
-            0
-        ) || 0,
-    }));
-  }, [fusionRows]);
-
-  // ------------------------------------------------------------
-  // Weight chart
-  //
-  // The backend may expose raw weight rows separately.
-  // ------------------------------------------------------------
-  const weightChartData = useMemo(() => {
-    const rows =
-      sessionData?.weight_sensor ||
-      sessionData?.weight ||
-      sessionData?.weight_rows ||
-      [];
-
-    if (!Array.isArray(rows)) return [];
-
-    return rows.map((row, index) => ({
-      time:
-        Number(
-          row.time_s ??
-            row.timestamp_s ??
-            row.time ??
-            index
-        ) || index,
-
-      weight:
-        Number(
-          row.weight_g ??
-            row.weight ??
-            row.mass_g ??
-            0
-        ) || 0,
-    }));
-  }, [sessionData]);
-
-  // ------------------------------------------------------------
-  // Empty / loading screen
-  // ------------------------------------------------------------
-  if (loadingSessions) {
+  // --------------------------------------------------
+  // Small metric component
+  // --------------------------------------------------
+  function Metric({
+    title,
+    value,
+    unit,
+    description,
+  }) {
     return (
-      <div className="app">
-        <div className="loading-screen">
-          <Activity size={36} />
-          <h2>Loading IV Monitoring System...</h2>
-          <p>Connecting to the local FastAPI backend.</p>
+      <div className="metric-card">
+        <div className="metric-title">
+          {title}
+        </div>
+
+        <div className="metric-value">
+          {value}
+          {unit && (
+            <span className="metric-unit">
+              {unit}
+            </span>
+          )}
+        </div>
+
+        <div className="metric-description">
+          {description}
         </div>
       </div>
     );
   }
 
-  // ------------------------------------------------------------
-  // Main UI
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // Sensor component
+  // --------------------------------------------------
+  function Sensor({
+    title,
+    value,
+    description,
+    active,
+  }) {
+    return (
+      <div
+        className={`sensor-card ${
+          active ? "sensor-active" : ""
+        }`}
+      >
+        <div className="sensor-header">
+          <span className="sensor-dot" />
+          <strong>{title}</strong>
+        </div>
+
+        <div className="sensor-value">
+          {Number.isFinite(value)
+            ? value.toFixed(1)
+            : "--"}
+
+          <span> mL/hr</span>
+        </div>
+
+        <div className="sensor-description">
+          {description}
+        </div>
+      </div>
+    );
+  }
+
+  // --------------------------------------------------
+  // Loading state
+  // --------------------------------------------------
+  if (loading) {
+    return (
+      <div className="app">
+        <div className="loading">
+          <div className="loading-spinner" />
+          <h2>Dual-Sensor IV Monitor</h2>
+          <p>
+            Connecting to the monitoring backend...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --------------------------------------------------
+  // Main page
+  // --------------------------------------------------
   return (
     <div className="app">
 
-      {/* ========================================================
-          HEADER
-      ======================================================== */}
-      <header className="app-header">
+      {/* HEADER */}
+      <header className="header">
 
-        <div className="brand">
-          <div className="brand-icon">
-            <Droplets size={28} />
-          </div>
+        <div>
+          <div className="brand">
+            <span className="brand-icon">
+              💧
+            </span>
 
-          <div>
-            <h1>Dual-Sensor IV Monitor</h1>
-            <p>
-              Predictive infusion monitoring using sensor fusion
-            </p>
+            <div>
+              <h1>
+                Dual-Sensor IV Monitor
+              </h1>
+
+              <p>
+                Predictive infusion monitoring
+                using EKF sensor fusion
+              </p>
+            </div>
           </div>
         </div>
 
-        <div className="header-right">
+        <div className="header-status">
 
-          <div className="simulation-badge">
-            <FlaskConical size={16} />
-            <span>SIMULATION / VALIDATION DATA</span>
+          <div className="simulation">
+            🧪 SIMULATION / VALIDATION
           </div>
 
-          <div className="connection-status">
-            <span className="status-dot" />
-            <Wifi size={16} />
-            <span>{deviceStatus}</span>
+          <div className="online">
+            <span />
+            Backend Connected
           </div>
 
         </div>
@@ -432,201 +393,218 @@ function App() {
       </header>
 
 
-      {/* ========================================================
-          ERROR
-      ======================================================== */}
+      {/* ERROR */}
       {error && (
-        <div className="error-banner">
-          <AlertTriangle size={20} />
-          <span>{error}</span>
+        <div className="error-box">
+          ⚠️
+          <div>
+            <strong>
+              Backend connection problem
+            </strong>
+
+            <p>{error}</p>
+          </div>
         </div>
       )}
 
 
-      {/* ========================================================
-          SESSION CONTROLS
-      ======================================================== */}
-      <section className="control-section">
+      {/* SESSION SELECTOR */}
+      <section className="section">
 
-        <div className="control-card">
+        <div className="section-header">
 
           <div>
-            <h3>Validation Session</h3>
-            <p>
-              Select a synthetic experiment from the research dataset.
-            </p>
+            <div className="eyebrow">
+              VALIDATION SESSION
+            </div>
+
+            <h2>
+              Select Experiment
+            </h2>
           </div>
 
-          <SessionSelector
-            sessions={sessions}
-            selectedSession={selectedSession}
-            onChange={setSelectedSession}
-          />
+          <select
+            value={selectedSession}
+            onChange={(event) =>
+              setSelectedSession(
+                event.target.value
+              )
+            }
+          >
+            <option value="">
+              Select a session
+            </option>
+
+            {sessions.map((session, index) => {
+
+              const id =
+                typeof session === "string"
+                  ? session
+                  : session.id;
+
+              return (
+                <option
+                  key={id || index}
+                  value={id}
+                >
+                  {id}
+                </option>
+              );
+            })}
+          </select>
 
         </div>
 
       </section>
 
 
-      {/* ========================================================
-          SESSION INFORMATION
-      ======================================================== */}
+      {/* CURRENT SESSION */}
       {selectedSession && (
-        <section className="session-info">
+        <section className="current-session">
 
-          <div className="session-title">
-            <div>
-              <span className="eyebrow">
-                CURRENT SESSION
-              </span>
-
-              <h2>{selectedSession}</h2>
+          <div>
+            <div className="eyebrow">
+              CURRENT SESSION
             </div>
 
-            <div
-              className={`anomaly-badge ${
-                isAnomaly ? "danger" : "normal"
-              }`}
-            >
-              {isAnomaly ? (
-                <>
-                  <AlertTriangle size={16} />
-                  {anomaly}
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 size={16} />
-                  Normal
-                </>
-              )}
-            </div>
+            <h2>
+              {selectedSession}
+            </h2>
+          </div>
+
+          <div
+            className={
+              isAnomaly
+                ? "anomaly danger"
+                : "anomaly normal"
+            }
+          >
+            {isAnomaly
+              ? `⚠ ${anomaly}`
+              : "✓ NORMAL"}
           </div>
 
         </section>
       )}
 
 
-      {/* ========================================================
-          PRIMARY METRICS
-      ======================================================== */}
-      <section className="metrics-grid">
+      {/* MAIN METRICS */}
+      <section className="metrics">
 
-        <MetricCard
+        <Metric
           title="Fused Flow Rate"
-          value={currentFlow.toFixed(1)}
+          value={
+            fusedFlow
+              ? fusedFlow.toFixed(1)
+              : "--"
+          }
           unit="mL/hr"
-          icon={<Gauge size={22} />}
-          subtitle={
-            targetFlow > 0
-              ? `Target: ${targetFlow.toFixed(1)} mL/hr`
+          description={
+            targetFlow
+              ? `Target ${targetFlow.toFixed(
+                  1
+                )} mL/hr`
               : "EKF estimate"
           }
         />
 
-        <MetricCard
+        <Metric
           title="Remaining Volume"
           value={
-            remainingVolume > 0
+            remainingVolume
               ? remainingVolume.toFixed(1)
               : "--"
           }
           unit="mL"
-          icon={<Droplets size={22} />}
-          subtitle={
-            bagVolume > 0
-              ? `Initial bag: ${bagVolume.toFixed(0)} mL`
+          description={
+            bagVolume
+              ? `Initial bag ${bagVolume.toFixed(
+                  0
+                )} mL`
               : "Estimated"
           }
         />
 
-        <MetricCard
+        <Metric
           title="Time Remaining"
-          value={formatTime(remainingTime)}
-          unit=""
-          icon={<Clock3 size={22} />}
-          subtitle={
-            remainingLow > 0 && remainingHigh > 0
-              ? `Range: ${formatTime(
+          value={formatTime(
+            remainingTime
+          )}
+          description={
+            remainingLow > 0 &&
+            remainingHigh > 0
+              ? `${formatTime(
                   remainingLow
-                )} – ${formatTime(remainingHigh)}`
-              : "Prediction"
+                )} – ${formatTime(
+                  remainingHigh
+                )}`
+              : "EKF prediction"
           }
         />
 
-        <MetricCard
-          title="Fusion Confidence"
-          value={confidence.toFixed(0)}
+        <Metric
+          title="Confidence"
+          value={
+            confidence
+              ? confidence.toFixed(0)
+              : "--"
+          }
           unit="%"
-          icon={<Activity size={22} />}
-          subtitle="Prototype confidence estimate"
+          description="Prototype confidence"
         />
 
       </section>
 
 
-      {/* ========================================================
-          SENSOR CARDS
-      ======================================================== */}
-      <section className="sensor-section">
+      {/* SENSOR FUSION */}
+      <section className="section">
 
-        <div className="section-heading">
+        <div className="section-header">
+
           <div>
-            <span className="eyebrow">
+            <div className="eyebrow">
               SENSOR FUSION
+            </div>
+
+            <h2>
+              Independent Measurements
+            </h2>
+          </div>
+
+          <div className="agreement">
+            <span>
+              Sensor Agreement
             </span>
 
-            <h2>Independent Flow Measurements</h2>
-          </div>
-
-          <div className="agreement-indicator">
-            <span>Agreement</span>
-
             <strong>
-              {sensorAgreement.toFixed(0)}%
+              {agreement.toFixed(0)}%
             </strong>
-
-            <small>{agreementLabel}</small>
           </div>
+
         </div>
 
 
-        <div className="sensor-grid">
+        <div className="sensors">
 
-          <SensorCard
+          <Sensor
             title="Load Cell"
-            value={loadCellFlow.toFixed(1)}
-            unit="mL/hr"
-            icon={<Scale size={22} />}
+            value={loadCellFlow}
             description="Mass-loss based flow estimate"
           />
 
-          <SensorCard
+          <Sensor
             title="IR Drop Sensor"
-            value={irFlow.toFixed(1)}
-            unit="mL/hr"
-            icon={<Activity size={22} />}
-            description={
-              adaptiveDropFactor > 0
-                ? `Adaptive factor: ${adaptiveDropFactor.toFixed(
-                    2
-                  )} gtts/mL`
-                : "Drop-count based flow estimate"
-            }
+            value={irFlow}
+            description="Drop-count based flow estimate"
           />
 
-          <SensorCard
+          <Sensor
             title="EKF Fusion"
-            value={currentFlow.toFixed(1)}
-            unit="mL/hr"
-            icon={<Gauge size={22} />}
-            description={
-              flowStd > 0
-                ? `Uncertainty: ±${flowStd.toFixed(
-                    2
-                  )} mL/hr`
-                : "Fused state estimate"
-            }
-            highlighted
+            value={fusedFlow}
+            description={`Uncertainty ±${flowStd.toFixed(
+              2
+            )} mL/hr`}
+            active
           />
 
         </div>
@@ -634,320 +612,269 @@ function App() {
       </section>
 
 
-      {/* ========================================================
-          CHARTS
-      ======================================================== */}
-      <section className="charts-section">
+      {/* FLOW GRAPH */}
+      <section className="section">
 
-        <div className="chart-card">
-
-          <div className="chart-header">
-            <div>
-              <span className="eyebrow">
-                FLOW ANALYSIS
-              </span>
-
-              <h3>Sensor Fusion Over Time</h3>
-            </div>
-
-            <div className="chart-legend">
-
-              <span>
-                <i className="legend fused" />
-                EKF Fusion
-              </span>
-
-              <span>
-                <i className="legend load" />
-                Load Cell
-              </span>
-
-              <span>
-                <i className="legend ir" />
-                IR Sensor
-              </span>
-
-            </div>
-          </div>
-
-          <div className="chart-container">
-
-            {flowChartData.length > 0 ? (
-              <FlowChart data={flowChartData} />
-            ) : (
-              <div className="empty-chart">
-                <Activity size={28} />
-                <p>No fusion data available.</p>
-              </div>
-            )}
-
-          </div>
-
-        </div>
-
-
-        <div className="chart-card">
-
-          <div className="chart-header">
-
-            <div>
-              <span className="eyebrow">
-                BAG MONITORING
-              </span>
-
-              <h3>Bag Weight Over Time</h3>
-            </div>
-
-            <div className="chart-stat">
-              <Scale size={18} />
-              <span>
-                {bagVolume > 0
-                  ? `${bagVolume.toFixed(0)} mL initial`
-                  : "Weight data"}
-              </span>
-            </div>
-
-          </div>
-
-          <div className="chart-container">
-
-            {weightChartData.length > 0 ? (
-              <WeightChart data={weightChartData} />
-            ) : (
-              <div className="empty-chart">
-                <Scale size={28} />
-                <p>
-                  Weight chart data will appear when the
-                  backend exposes the sensor rows.
-                </p>
-              </div>
-            )}
-
-          </div>
-
-        </div>
-
-      </section>
-
-
-      {/* ========================================================
-          PREDICTION
-      ======================================================== */}
-      <section className="prediction-section">
-
-        <div className="section-heading">
+        <div className="section-header">
 
           <div>
-            <span className="eyebrow">
-              PREDICTIVE MONITORING
-            </span>
-
-            <h2>Infusion Completion Prediction</h2>
-          </div>
-
-        </div>
-
-
-        <PredictionCard
-          remainingTime={remainingTime}
-          remainingLow={remainingLow}
-          remainingHigh={remainingHigh}
-          remainingVolume={remainingVolume}
-          confidence={confidence}
-          currentFlow={currentFlow}
-        />
-
-      </section>
-
-
-      {/* ========================================================
-          ADAPTIVE CALIBRATION
-      ======================================================== */}
-      <section className="calibration-section">
-
-        <div className="calibration-card">
-
-          <div className="calibration-icon">
-            <Activity size={22} />
-          </div>
-
-          <div className="calibration-content">
-
-            <span className="eyebrow">
-              ADAPTIVE CALIBRATION
-            </span>
-
-            <h3>
-              Effective Drop Factor
-            </h3>
-
-            <p>
-              The EKF estimates the effective drop factor from
-              the relationship between measured mass-loss flow
-              and observed drop rate.
-            </p>
-
-          </div>
-
-          <div className="calibration-value">
-
-            <strong>
-              {adaptiveDropFactor > 0
-                ? adaptiveDropFactor.toFixed(2)
-                : "--"}
-            </strong>
-
-            <span>gtts/mL</span>
-
-            {dropFactor > 0 && (
-              <small>
-                Nominal: {dropFactor.toFixed(2)}
-              </small>
-            )}
-
-          </div>
-
-        </div>
-
-      </section>
-
-
-      {/* ========================================================
-          UNCERTAINTY
-      ======================================================== */}
-      <section className="uncertainty-section">
-
-        <div className="uncertainty-card">
-
-          <div className="uncertainty-left">
-
-            <div className="uncertainty-icon">
-              <Activity size={22} />
+            <div className="eyebrow">
+              FLOW ANALYSIS
             </div>
 
-            <div>
-              <span className="eyebrow">
-                ESTIMATION UNCERTAINTY
-              </span>
+            <h2>
+              EKF Flow Estimate
+            </h2>
+          </div>
 
-              <h3>
-                EKF Flow Uncertainty
-              </h3>
+          <div className="data-count">
+            {fusionData.length} windows
+          </div>
+
+        </div>
+
+
+        <div className="chart">
+
+          {fusionData.length === 0 ? (
+            <div className="no-data">
+              <div>
+                📊
+              </div>
 
               <p>
-                Lower uncertainty generally indicates greater
-                consistency between the sensor measurements and
-                the current model state.
+                No fusion data available yet.
               </p>
             </div>
+          ) : (
+            <div className="bars">
 
-          </div>
+              {fusionData
+                .slice(-40)
+                .map((row, index) => {
 
-          <div className="uncertainty-value">
+                  const value = Number(
+                    row.fused_flow_ml_per_hr ??
+                      0
+                  );
 
-            <strong>
-              {flowStd > 0
-                ? `±${flowStd.toFixed(2)}`
-                : "--"}
-            </strong>
+                  const max =
+                    Math.max(
+                      ...fusionData.map(
+                        (r) =>
+                          Number(
+                            r.fused_flow_ml_per_hr ??
+                              0
+                          )
+                      ),
+                      1
+                    );
 
-            <span>mL/hr</span>
+                  const height =
+                    Math.max(
+                      5,
+                      (value / max) * 100
+                    );
 
-          </div>
+                  return (
+                    <div
+                      className="bar-wrapper"
+                      key={index}
+                    >
+                      <div
+                        className="bar"
+                        style={{
+                          height: `${height}%`,
+                        }}
+                        title={`${value.toFixed(
+                          1
+                        )} mL/hr`}
+                      />
+                    </div>
+                  );
+                })}
+
+            </div>
+          )}
 
         </div>
 
       </section>
 
 
-      {/* ========================================================
-          VALIDATION INFORMATION
-      ======================================================== */}
-      <section className="validation-section">
+      {/* CALIBRATION + PREDICTION */}
+      <section className="two-column">
 
-        <div className="validation-card">
+        <div className="info-card">
 
-          <div className="validation-header">
-
-            <FlaskConical size={22} />
-
-            <div>
-              <h3>
-                Research / Validation Mode
-              </h3>
-
-              <p>
-                This dashboard is connected to the synthetic
-                validation dataset included in the project
-                repository.
-              </p>
-            </div>
-
+          <div className="eyebrow">
+            ADAPTIVE CALIBRATION
           </div>
 
+          <h2>
+            Effective Drop Factor
+          </h2>
 
-          <div className="validation-grid">
+          <div className="large-number">
+            {dropFactor
+              ? dropFactor.toFixed(2)
+              : "--"}
 
-            <div>
-              <span>Session</span>
-              <strong>
-                {selectedSession || "--"}
-              </strong>
-            </div>
-
-            <div>
-              <span>Target Flow</span>
-              <strong>
-                {targetFlow > 0
-                  ? `${targetFlow.toFixed(1)} mL/hr`
-                  : "--"}
-              </strong>
-            </div>
-
-            <div>
-              <span>Nominal Drop Factor</span>
-              <strong>
-                {dropFactor > 0
-                  ? `${dropFactor.toFixed(2)} gtts/mL`
-                  : "--"}
-              </strong>
-            </div>
-
-            <div>
-              <span>Samples / Windows</span>
-              <strong>
-                {fusionRows.length || "--"}
-              </strong>
-            </div>
-
+            <span>
+              gtts/mL
+            </span>
           </div>
-
-        </div>
-
-      </section>
-
-
-      {/* ========================================================
-          DISCLAIMER
-      ======================================================== */}
-      <footer className="app-footer">
-
-        <div className="footer-warning">
-
-          <AlertTriangle size={18} />
 
           <p>
-            <strong>Prototype / Research Use Only.</strong>{" "}
-            This system is a university engineering prototype
-            for sensor-fusion and predictive-monitoring research.
-            It is not a medical device and must not be used to
-            make clinical decisions or control infusion delivery.
+            The EKF continuously estimates the
+            effective drop factor from the
+            relationship between flow and observed
+            drop rate.
           </p>
+
+          {nominalDropFactor > 0 && (
+            <div className="small-info">
+              Nominal:
+              {" "}
+              {nominalDropFactor.toFixed(
+                2
+              )}
+              {" "}
+              gtts/mL
+            </div>
+          )}
 
         </div>
 
-        <p className="footer-copy">
-          Dual-Sensor Predictive IV Monitoring System
+
+        <div className="info-card">
+
+          <div className="eyebrow">
+            PREDICTION
+          </div>
+
+          <h2>
+            Infusion Completion
+          </h2>
+
+          <div className="large-number">
+            {formatTime(
+              remainingTime
+            )}
+          </div>
+
+          <p>
+            Estimated time until the simulated
+            infusion volume is depleted.
+          </p>
+
+          {remainingLow > 0 &&
+            remainingHigh > 0 && (
+              <div className="small-info">
+                Prediction range:
+                {" "}
+                {formatTime(
+                  remainingLow
+                )}
+                {" – "}
+                {formatTime(
+                  remainingHigh
+                )}
+              </div>
+            )}
+
+        </div>
+
+      </section>
+
+
+      {/* SESSION DETAILS */}
+      <section className="section">
+
+        <div className="section-header">
+
+          <div>
+            <div className="eyebrow">
+              EXPERIMENT DETAILS
+            </div>
+
+            <h2>
+              Dataset Information
+            </h2>
+          </div>
+
+        </div>
+
+
+        <div className="details">
+
+          <div>
+            <span>Session</span>
+            <strong>
+              {selectedSession || "--"}
+            </strong>
+          </div>
+
+          <div>
+            <span>Target Flow</span>
+            <strong>
+              {targetFlow
+                ? `${targetFlow.toFixed(
+                    1
+                  )} mL/hr`
+                : "--"}
+            </strong>
+          </div>
+
+          <div>
+            <span>Bag Volume</span>
+            <strong>
+              {bagVolume
+                ? `${bagVolume.toFixed(
+                    0
+                  )} mL`
+                : "--"}
+            </strong>
+          </div>
+
+          <div>
+            <span>Drop Factor</span>
+            <strong>
+              {dropFactor
+                ? `${dropFactor.toFixed(
+                    2
+                  )} gtts/mL`
+                : "--"}
+            </strong>
+          </div>
+
+          <div>
+            <span>EKF Windows</span>
+            <strong>
+              {fusionData.length}
+            </strong>
+          </div>
+
+        </div>
+
+      </section>
+
+
+      {/* FOOTER */}
+      <footer>
+
+        <div>
+          ⚠️
+        </div>
+
+        <p>
+          <strong>
+            Prototype / Research Use Only.
+          </strong>{" "}
+          This system uses synthetic validation
+          data and is not a medical device. It
+          must not be used for clinical decisions
+          or to control infusion delivery.
         </p>
 
       </footer>

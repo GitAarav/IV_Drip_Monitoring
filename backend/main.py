@@ -1,266 +1,391 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-
 from pathlib import Path
 import sys
 import json
-import csv
 
-# ---------------------------------------------------------
-# PATHS
-# ---------------------------------------------------------
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+
+# ============================================================
+# PROJECT PATHS
+# ============================================================
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 DATASET_DIR = ROOT_DIR / "synthetic_dataset"
 
-# Allow Python to import kalman_filter_iv.py from root
-sys.path.append(str(ROOT_DIR))
-
-from kalman_filter_iv import IVFusionEKF
+# Allow Python to import the existing research code
+sys.path.insert(0, str(ROOT_DIR))
 
 
-# ---------------------------------------------------------
+# ============================================================
+# EXISTING EKF
+# ============================================================
+
+from kalman_filter_iv import stream_fusion
+
+
+# ============================================================
 # FASTAPI
-# ---------------------------------------------------------
+# ============================================================
 
 app = FastAPI(
     title="IV Drip Monitoring API",
-    description="Backend API for the dual-sensor IV monitoring dashboard",
+    description="Backend API for the Dual-Sensor Predictive IV Monitoring System",
     version="1.0.0",
 )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # CORS
-# ---------------------------------------------------------
+# ============================================================
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ---------------------------------------------------------
-# HEALTH CHECK
-# ---------------------------------------------------------
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def get_run_directory(session_id: str) -> Path:
+    """
+    Return the directory for a requested synthetic run.
+    """
+
+    run_dir = DATASET_DIR / session_id
+
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session '{session_id}' not found",
+        )
+
+    return run_dir
+
+
+def load_metadata(session_id: str):
+    """
+    Load meta.json for a session.
+    """
+
+    run_dir = get_run_directory(session_id)
+
+    meta_file = run_dir / "meta.json"
+
+    if not meta_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"meta.json not found for '{session_id}'",
+        )
+
+    with open(meta_file, "r") as f:
+        return json.load(f)
+
+
+def clean_value(value):
+    """
+    Convert NumPy/Pandas values into JSON-safe values.
+    """
+
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+
+    if pd.isna(value):
+        return None
+
+    return value
+
+
+def clean_record(record):
+    """
+    Convert a dictionary into JSON-safe values.
+    """
+
+    return {
+        key: clean_value(value)
+        for key, value in record.items()
+    }
+
+
+# ============================================================
+# ROOT
+# ============================================================
+
+@app.get("/")
+def root():
+    return {
+        "message": "IV Drip Monitoring API",
+        "docs": "/docs",
+    }
+
+
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.get("/api/health")
 def health():
     return {
         "status": "ok",
-        "message": "IV Monitoring backend is running"
+        "dataset_exists": DATASET_DIR.exists(),
+        "dataset_path": str(DATASET_DIR),
     }
 
 
-# ---------------------------------------------------------
-# FIND SESSION DIRECTORIES
-# ---------------------------------------------------------
-
-def get_session_directories():
-
-    if not DATASET_DIR.exists():
-        return []
-
-    return sorted(
-        [
-            path
-            for path in DATASET_DIR.iterdir()
-            if path.is_dir() and path.name.startswith("run_")
-        ]
-    )
-
-
-# ---------------------------------------------------------
-# SESSION LIST
-# ---------------------------------------------------------
+# ============================================================
+# LIST SESSIONS
+# ============================================================
 
 @app.get("/api/sessions")
 def get_sessions():
+    """
+    Return all synthetic validation sessions.
+    """
+
+    if not DATASET_DIR.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=f"Dataset directory not found: {DATASET_DIR}",
+        )
 
     sessions = []
 
-    for session_dir in get_session_directories():
+    for run_dir in sorted(DATASET_DIR.glob("run_*")):
 
-        meta_file = session_dir / "meta.json"
+        if not run_dir.is_dir():
+            continue
 
-        metadata = {}
+        meta_file = run_dir / "meta.json"
 
-        if meta_file.exists():
+        if not meta_file.exists():
+            continue
 
-            try:
-                with open(meta_file, "r") as f:
-                    metadata = json.load(f)
+        try:
+            with open(meta_file, "r") as f:
+                meta = json.load(f)
 
-            except Exception:
-                metadata = {}
+            sessions.append({
+                "id": run_dir.name,
 
-        sessions.append({
-            "id": session_dir.name,
-            "path": session_dir.name,
-            "metadata": metadata
-        })
+                "target_flow_ml_per_hr": meta.get(
+                    "target_flow_ml_per_hr"
+                ),
+
+                "drop_factor_name": meta.get(
+                    "drop_factor_name"
+                ),
+
+                "drop_factor_nominal_gtts_per_ml": meta.get(
+                    "drop_factor_nominal_gtts_per_ml"
+                ),
+
+                "fluid_name": meta.get(
+                    "fluid_name"
+                ),
+
+                "bag_volume_ml": meta.get(
+                    "bag_volume_ml"
+                ),
+
+                "duration_s": meta.get(
+                    "duration_s"
+                ),
+
+                "anomaly": meta.get(
+                    "anomaly",
+                    "none"
+                ),
+
+                "anomaly_start_frac": meta.get(
+                    "anomaly_start_frac"
+                ),
+            })
+
+        except Exception as exc:
+            print(
+                f"Could not read metadata for {run_dir.name}: {exc}"
+            )
 
     return sessions
 
 
-# ---------------------------------------------------------
-# FIND CSV FILE
-# ---------------------------------------------------------
-
-def find_csv(session_dir, possible_names):
-
-    for name in possible_names:
-
-        file_path = session_dir / name
-
-        if file_path.exists():
-            return file_path
-
-    return None
-
-
-# ---------------------------------------------------------
-# READ CSV
-# ---------------------------------------------------------
-
-def read_csv_file(file_path):
-
-    if not file_path:
-        return []
-
-    rows = []
-
-    with open(file_path, "r", newline="") as f:
-
-        reader = csv.DictReader(f)
-
-        for row in reader:
-            rows.append(row)
-
-    return rows
-
-
-# ---------------------------------------------------------
+# ============================================================
 # SESSION DETAILS
-# ---------------------------------------------------------
+# ============================================================
 
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str):
 
-    session_dir = DATASET_DIR / session_id
+    run_dir = get_run_directory(session_id)
 
-    if not session_dir.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found"
-        )
+    meta = load_metadata(session_id)
 
-    meta_file = session_dir / "meta.json"
-
-    metadata = {}
-
-    if meta_file.exists():
-
-        with open(meta_file, "r") as f:
-            metadata = json.load(f)
-
-    weight_file = find_csv(
-        session_dir,
-        [
-            "weight_sensor.csv",
-            "weight.csv",
-        ]
-    )
-
-    drop_file = find_csv(
-        session_dir,
-        [
-            "drop_sensor.csv",
-            "drops.csv",
-        ]
-    )
-
-    ground_truth_file = find_csv(
-        session_dir,
-        [
-            "ground_truth.csv",
-        ]
-    )
-
-    return {
+    result = {
         "id": session_id,
-        "metadata": metadata,
-        "weight": read_csv_file(weight_file),
-        "drops": read_csv_file(drop_file),
-        "ground_truth": read_csv_file(ground_truth_file),
+        "metadata": meta,
     }
 
+    # --------------------------------------------------------
+    # Weight sensor information
+    # --------------------------------------------------------
 
-# ---------------------------------------------------------
-# ROOT
-# ---------------------------------------------------------
+    weight_file = run_dir / "weight_sensor.csv"
 
-@app.get("/")
-def root():
+    if weight_file.exists():
 
-    return {
-        "message": "IV Drip Monitoring API",
-        "docs": "/docs"
-    }
+        weight_df = pd.read_csv(weight_file)
 
-# ---------------------------------------------------------
-# EKF PROCESSING
-# ---------------------------------------------------------
+        result["weight_sensor"] = {
+            "rows": len(weight_df),
+            "columns": list(weight_df.columns),
+        }
+
+        # Return a reduced set for the frontend.
+        #
+        # We don't send tens of thousands of rows unnecessarily.
+        if len(weight_df) > 1000:
+            sample = weight_df.iloc[
+                :: max(1, len(weight_df) // 1000)
+            ]
+        else:
+            sample = weight_df
+
+        result["weight_data"] = [
+            clean_record(row)
+            for row in sample.to_dict(
+                orient="records"
+            )
+        ]
+
+    else:
+        result["weight_sensor"] = {
+            "rows": 0,
+            "columns": [],
+        }
+
+        result["weight_data"] = []
+
+
+    # --------------------------------------------------------
+    # Drop sensor information
+    # --------------------------------------------------------
+
+    drop_file = run_dir / "drop_sensor.csv"
+
+    if drop_file.exists():
+
+        drop_df = pd.read_csv(drop_file)
+
+        result["drop_sensor"] = {
+            "rows": len(drop_df),
+            "columns": list(drop_df.columns),
+        }
+
+    else:
+
+        result["drop_sensor"] = {
+            "rows": 0,
+            "columns": [],
+        }
+
+
+    # --------------------------------------------------------
+    # Ground truth information
+    #
+    # This is VALIDATION ONLY.
+    # --------------------------------------------------------
+
+    truth_file = run_dir / "ground_truth.csv"
+
+    if truth_file.exists():
+
+        truth_df = pd.read_csv(truth_file)
+
+        result["ground_truth"] = {
+            "rows": len(truth_df),
+            "columns": list(truth_df.columns),
+        }
+
+    else:
+
+        result["ground_truth"] = {
+            "rows": 0,
+            "columns": [],
+        }
+
+
+    return result
+
+
+# ============================================================
+# RUN EKF FUSION
+# ============================================================
 
 @app.get("/api/sessions/{session_id}/fusion")
 def get_fusion(session_id: str):
 
-    session_dir = DATASET_DIR / session_id
+    run_dir = get_run_directory(session_id)
 
-    if not session_dir.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found"
+    try:
+
+        print(
+            f"Running EKF fusion for {session_id}..."
         )
 
-    meta_file = session_dir / "meta.json"
+        results = []
 
-    if not meta_file.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Session metadata not found"
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # This calls YOUR existing research implementation.
+        #
+        # We are not recreating the EKF in JavaScript.
+        # ----------------------------------------------------
+
+        for row in stream_fusion(
+            str(run_dir),
+            window_s=60.0,
+            fluid_density=1.01,
+            auto_calibrate=True,
+        ):
+
+            results.append(
+                clean_record(row)
+            )
+
+        print(
+            f"EKF completed: {len(results)} windows"
         )
 
-    with open(meta_file, "r") as f:
-        metadata = json.load(f)
+        return {
+            "session_id": session_id,
+            "window_s": 60.0,
+            "count": len(results),
+            "rows": results,
+        }
 
-    weight_file = find_csv(
-        session_dir,
-        ["weight_sensor.csv", "weight.csv"]
-    )
+    except Exception as exc:
 
-    drop_file = find_csv(
-        session_dir,
-        ["drop_sensor.csv", "drops.csv"]
-    )
-
-    if not weight_file or not drop_file:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Sensor CSV files not found"
+        print(
+            f"EKF ERROR for {session_id}:"
         )
 
-    weight_data = read_csv_file(weight_file)
-    drop_data = read_csv_file(drop_file)
+        print(exc)
 
-    return {
-        "session_id": session_id,
-        "metadata": metadata,
-        "weight_samples": len(weight_data),
-        "drop_samples": len(drop_data),
-    }
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        )
